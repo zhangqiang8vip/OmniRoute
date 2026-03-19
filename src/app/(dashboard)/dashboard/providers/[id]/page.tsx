@@ -286,9 +286,13 @@ export default function ProviderDetailPage() {
       if (res.ok) {
         await fetchConnections();
         setShowEditModal(false);
+        return null;
       }
+      const data = await res.json().catch(() => ({}));
+      return data.error?.message || data.error || t("failedSaveConnection");
     } catch (error) {
       console.log("Error updating connection:", error);
+      return t("failedSaveConnectionRetry");
     }
   };
 
@@ -2640,10 +2644,14 @@ function AddApiKeyModal({
   onClose,
 }) {
   const t = useTranslations("providers");
+  const isBailian = provider === "bailian-coding-plan";
+  const defaultBailianUrl = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic/v1";
+
   const [formData, setFormData] = useState({
     name: "",
     apiKey: "",
     priority: 1,
+    baseUrl: isBailian ? defaultBailianUrl : "",
   });
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
@@ -2674,6 +2682,16 @@ function AddApiKeyModal({
     setSaving(true);
     setSaveError(null);
     try {
+      let validatedBailianBaseUrl = null;
+      if (isBailian) {
+        const checked = normalizeAndValidateHttpBaseUrl(formData.baseUrl, defaultBailianUrl);
+        if (checked.error) {
+          setSaveError(checked.error);
+          return;
+        }
+        validatedBailianBaseUrl = checked.value;
+      }
+
       let isValid = false;
       try {
         setValidating(true);
@@ -2697,12 +2715,22 @@ function AddApiKeyModal({
         return;
       }
 
-      const error = await onSave({
+      const payload = {
         name: formData.name,
         apiKey: formData.apiKey,
         priority: formData.priority,
         testStatus: "active",
-      });
+        providerSpecificData: undefined,
+      };
+
+      // Include baseUrl in providerSpecificData for bailian-coding-plan
+      if (isBailian) {
+        payload.providerSpecificData = {
+          baseUrl: validatedBailianBaseUrl,
+        };
+      }
+
+      const error = await onSave(payload);
       if (error) {
         setSaveError(typeof error === "string" ? error : t("failedSaveConnection"));
       }
@@ -2773,6 +2801,15 @@ function AddApiKeyModal({
             setFormData({ ...formData, priority: Number.parseInt(e.target.value) || 1 })
           }
         />
+        {isBailian && (
+          <Input
+            label="Base URL"
+            value={formData.baseUrl}
+            onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
+            placeholder={defaultBailianUrl}
+            hint="Optional: Custom base URL for bailian-coding-plan provider"
+          />
+        )}
         <div className="flex gap-2">
           <Button
             onClick={handleSubmit}
@@ -2800,6 +2837,19 @@ AddApiKeyModal.propTypes = {
   onClose: PropTypes.func.isRequired,
 };
 
+function normalizeAndValidateHttpBaseUrl(rawValue, fallbackUrl) {
+  const value = (typeof rawValue === "string" ? rawValue.trim() : "") || fallbackUrl;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { value: null, error: "Base URL must use http or https" };
+    }
+    return { value, error: null };
+  } catch {
+    return { value: null, error: "Base URL must be a valid URL" };
+  }
+}
+
 function EditConnectionModal({ isOpen, connection, onSave, onClose }) {
   const t = useTranslations("providers");
   const [formData, setFormData] = useState({
@@ -2807,22 +2857,29 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }) {
     priority: 1,
     apiKey: "",
     healthCheckInterval: 60,
+    baseUrl: "",
   });
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [extraApiKeys, setExtraApiKeys] = useState<string[]>([]);
   const [newExtraKey, setNewExtraKey] = useState("");
 
+  const isBailian = connection?.provider === "bailian-coding-plan";
+  const defaultBailianUrl = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic/v1";
+
   useEffect(() => {
     if (connection) {
+      const existingBaseUrl = connection.providerSpecificData?.baseUrl;
       setFormData({
         name: connection.name || "",
         priority: connection.priority || 1,
         apiKey: "",
         healthCheckInterval: connection.healthCheckInterval ?? 60,
+        baseUrl: existingBaseUrl || (isBailian ? defaultBailianUrl : ""),
       });
       // Load existing extra keys from providerSpecificData
       const existing = connection.providerSpecificData?.extraApiKeys;
@@ -2830,8 +2887,9 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }) {
       setNewExtraKey("");
       setTestResult(null);
       setValidationResult(null);
+      setSaveError(null);
     }
-  }, [connection]);
+  }, [connection, isBailian]);
 
   const handleTest = async () => {
     if (!connection?.provider) return;
@@ -2877,12 +2935,24 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }) {
 
   const handleSubmit = async () => {
     setSaving(true);
+    setSaveError(null);
     try {
       const updates: any = {
         name: formData.name,
         priority: formData.priority,
         healthCheckInterval: formData.healthCheckInterval,
       };
+
+      let validatedBailianBaseUrl = null;
+      if (isBailian) {
+        const checked = normalizeAndValidateHttpBaseUrl(formData.baseUrl, defaultBailianUrl);
+        if (checked.error) {
+          setSaveError(checked.error);
+          return;
+        }
+        validatedBailianBaseUrl = checked.value;
+      }
+
       if (!isOAuth && formData.apiKey) {
         updates.apiKey = formData.apiKey;
         let isValid = validationResult === "success";
@@ -2914,14 +2984,21 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }) {
           updates.rateLimitedUntil = null;
         }
       }
-      // Persist extra API keys in providerSpecificData
+      // Persist extra API keys and baseUrl in providerSpecificData
       if (!isOAuth) {
         updates.providerSpecificData = {
           ...(connection.providerSpecificData || {}),
           extraApiKeys: extraApiKeys.filter((k) => k.trim().length > 0),
         };
+        // Update baseUrl for bailian-coding-plan
+        if (isBailian) {
+          updates.providerSpecificData.baseUrl = validatedBailianBaseUrl;
+        }
       }
-      await onSave(updates);
+      const error = await onSave(updates);
+      if (error) {
+        setSaveError(typeof error === "string" ? error : t("failedSaveConnection"));
+      }
     } finally {
       setSaving(false);
     }
@@ -3002,7 +3079,22 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }) {
                 {validationResult === "success" ? t("valid") : t("invalid")}
               </Badge>
             )}
+            {saveError && (
+              <div className="text-sm text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                {saveError}
+              </div>
+            )}
           </>
+        )}
+
+        {isBailian && (
+          <Input
+            label="Base URL"
+            value={formData.baseUrl}
+            onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
+            placeholder={defaultBailianUrl}
+            hint="Custom base URL for bailian-coding-plan provider"
+          />
         )}
 
         {/* T07: Extra API Keys for round-robin rotation */}
