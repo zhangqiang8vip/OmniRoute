@@ -227,7 +227,13 @@ export function getModelNormalizeToolCallId(providerId: string, modelId: string)
     .get(providerId);
   const value = getKeyValue(row).value;
   if (!value) return false;
-  const models = JSON.parse(value);
+  let models: { id: string; normalizeToolCallId?: boolean }[];
+  try {
+    models = JSON.parse(value);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(models)) return false;
   const m = models.find((x: { id: string }) => x.id === modelId);
   return Boolean(m?.normalizeToolCallId);
 }
